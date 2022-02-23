@@ -5,10 +5,11 @@
 import Sprite = Phaser.GameObjects.Sprite;
 import type { GameScene } from "../Game/GameScene";
 import type OutlinePipelinePlugin from "phaser3-rex-plugins/plugins/outlinepipeline-plugin.js";
+import type { ActivatableInterface } from "../Game/ActivatableInterface";
 
 type EventCallback = (state: unknown, parameters: unknown) => void;
 
-export class ActionableItem {
+export class ActionableItem implements ActivatableInterface {
     private readonly activationRadiusSquared: number;
     private isSelectable: boolean = false;
     private callbacks: Map<string, Array<EventCallback>> = new Map<string, Array<EventCallback>>();
@@ -17,7 +18,7 @@ export class ActionableItem {
         private id: number,
         private sprite: Sprite,
         private eventHandler: GameScene,
-        private activationRadius: number,
+        public readonly activationRadius: number,
         private onActivateCallback: (item: ActionableItem) => void
     ) {
         this.activationRadiusSquared = activationRadius * activationRadius;
@@ -40,6 +41,10 @@ export class ActionableItem {
         }
     }
 
+    public getPosition(): { x: number; y: number } {
+        return { x: this.sprite.x, y: this.sprite.y };
+    }
+
     /**
      * Show the outline of the sprite.
      */
@@ -51,7 +56,7 @@ export class ActionableItem {
 
         this.getOutlinePlugin()?.add(this.sprite, {
             thickness: 2,
-            outlineColor: 0xffff00,
+            outlineColor: 0xf9e81e,
         });
     }
 
@@ -70,9 +75,10 @@ export class ActionableItem {
         return this.sprite.scene.plugins.get("rexOutlinePipeline") as unknown as OutlinePipelinePlugin | undefined;
     }
 
-    /**
-     * Triggered when the "space" key is pressed and the object is in range of being activated.
-     */
+    public isActivatable(): boolean {
+        return this.isSelectable;
+    }
+
     public activate(): void {
         this.onActivateCallback(this);
     }

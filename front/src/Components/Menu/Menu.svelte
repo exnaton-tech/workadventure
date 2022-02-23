@@ -1,4 +1,4 @@
-<script lang="typescript">
+<script lang="ts">
     import { fly } from "svelte/transition";
     import SettingsSubMenu from "./SettingsSubMenu.svelte";
     import ProfileSubMenu from "./ProfileSubMenu.svelte";
@@ -69,6 +69,7 @@
         } else {
             const customMenu = customMenuIframe.get(menu.label);
             if (customMenu !== undefined) {
+                activeSubMenu = menu;
                 props = { url: customMenu.url, allowApi: customMenu.allowApi };
                 activeComponent = CustomSubMenu;
             } else {

@@ -1,4 +1,4 @@
-<script lang="typescript">
+<script lang="ts">
     import type { Game } from "../../Phaser/Game/Game";
     import { LoginScene, LoginSceneName } from "../../Phaser/Login/LoginScene";
     import { DISPLAY_TERMS_OF_USE, MAX_USERNAME_LENGTH } from "../../Enum/EnvironmentVariable";
@@ -53,7 +53,7 @@
         <section class="terms-and-conditions">
             <a style="display: none;" href="traduction">Need for traduction</a>
             <p>
-                {$LL.login.terms()}
+                {@html $LL.login.terms()}
             </p>
         </section>
     {/if}

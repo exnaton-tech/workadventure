@@ -5,14 +5,14 @@ import { get, Unsubscriber } from "svelte/store";
 
 import { userMessageManager } from "../../Administration/UserMessageManager";
 import { connectionManager } from "../../Connexion/ConnectionManager";
-import { CoWebsite, coWebsiteManager } from "../../WebRtc/CoWebsiteManager";
+import { coWebsiteManager } from "../../WebRtc/CoWebsiteManager";
 import { urlManager } from "../../Url/UrlManager";
 import { mediaManager } from "../../WebRtc/MediaManager";
 import { UserInputManager } from "../UserInput/UserInputManager";
 import { gameManager } from "./GameManager";
 import { touchScreenManager } from "../../Touch/TouchScreenManager";
 import { PinchManager } from "../UserInput/PinchManager";
-import { waScaleManager, WaScaleManagerEvent } from "../Services/WaScaleManager";
+import { waScaleManager } from "../Services/WaScaleManager";
 import { EmoteManager } from "./EmoteManager";
 import { soundManager } from "./SoundManager";
 import { SharedVariablesManager } from "./SharedVariablesManager";
@@ -20,9 +20,8 @@ import { EmbeddedWebsiteManager } from "./EmbeddedWebsiteManager";
 
 import { lazyLoadPlayerCharacterTextures, loadCustomTexture } from "../Entity/PlayerTexturesLoadingManager";
 import { lazyLoadCompanionResource } from "../Companion/CompanionTexturesLoadingManager";
-import { ON_ACTION_TRIGGER_BUTTON } from "../../WebRtc/LayoutManager";
 import { iframeListener } from "../../Api/IframeListener";
-import { DEBUG_MODE, JITSI_PRIVATE_MODE, MAX_PER_GROUP, POSITION_DELAY } from "../../Enum/EnvironmentVariable";
+import { DEBUG_MODE, JITSI_URL, MAX_PER_GROUP, POSITION_DELAY } from "../../Enum/EnvironmentVariable";
 import { ProtobufClientUtils } from "../../Network/ProtobufClientUtils";
 import { Room } from "../../Connexion/Room";
 import { jitsiFactory } from "../../WebRtc/JitsiFactory";
@@ -49,6 +48,7 @@ import { GameMapPropertiesListener } from "./GameMapPropertiesListener";
 import { analyticsClient } from "../../Administration/AnalyticsClient";
 import { GameMapProperties } from "./GameMapProperties";
 import { PathfindingManager } from "../../Utils/PathfindingManager";
+import { ActivatablesManager } from "./ActivatablesManager";
 import type {
     GroupCreatedUpdatedMessageInterface,
     MessageUserMovedInterface,
@@ -75,7 +75,7 @@ import { emoteStore, emoteMenuStore } from "../../Stores/EmoteStore";
 import { userIsAdminStore } from "../../Stores/GameStore";
 import { contactPageStore } from "../../Stores/MenuStore";
 import type { WasCameraUpdatedEvent } from "../../Api/Events/WasCameraUpdatedEvent";
-import { audioManagerFileStore, audioManagerVisibilityStore } from "../../Stores/AudioManagerStore";
+import { audioManagerFileStore } from "../../Stores/AudioManagerStore";
 
 import EVENT_TYPE = Phaser.Scenes.Events;
 import Texture = Phaser.Textures.Texture;
@@ -89,10 +89,14 @@ import { deepCopy } from "deep-copy-ts";
 import FILE_LOAD_ERROR = Phaser.Loader.Events.FILE_LOAD_ERROR;
 import { MapStore } from "../../Stores/Utils/MapStore";
 import { followUsersColorStore } from "../../Stores/FollowStore";
-import Camera = Phaser.Cameras.Scene2D.Camera;
 import { GameSceneUserInputHandler } from "../UserInput/GameSceneUserInputHandler";
 import { locale } from "../../i18n/i18n-svelte";
-
+import { localVolumeStore } from "../../Stores/MediaStore";
+import { StringUtils } from "../../Utils/StringUtils";
+import { startLayerNamesStore } from "../../Stores/StartLayerNamesStore";
+import { JitsiCoWebsite } from "../../WebRtc/CoWebsite/JitsiCoWebsite";
+import { SimpleCoWebsite } from "../../WebRtc/CoWebsite/SimpleCoWebsite";
+import type { CoWebsite } from "../../WebRtc/CoWebsite/CoWesbite";
 export interface GameSceneInitInterface {
     initPosition: PointInterface | null;
     reconnecting: boolean;
@@ -169,6 +173,9 @@ export class GameScene extends DirtyScene {
     private peerStoreUnsubscribe!: Unsubscriber;
     private emoteUnsubscribe!: Unsubscriber;
     private emoteMenuUnsubscribe!: Unsubscriber;
+
+    private volumeStoreUnsubscribers: Map<number, Unsubscriber> = new Map<number, Unsubscriber>();
+    private localVolumeStoreUnsubscriber: Unsubscriber | undefined;
     private followUsersColorStoreUnsubscribe!: Unsubscriber;
 
     private biggestAvailableAreaStoreUnsubscribe!: () => void;
@@ -189,8 +196,6 @@ export class GameScene extends DirtyScene {
 
     private gameMap!: GameMap;
     private actionableItems: Map<number, ActionableItem> = new Map<number, ActionableItem>();
-    // The item that can be selected by pressing the space key.
-    private outlinedItem: ActionableItem | null = null;
     public userInputManager!: UserInputManager;
     private isReconnecting: boolean | undefined = undefined;
     private playerName!: string;
@@ -204,6 +209,7 @@ export class GameScene extends DirtyScene {
     private emoteManager!: EmoteManager;
     private cameraManager!: CameraManager;
     private pathfindingManager!: PathfindingManager;
+    private activatablesManager!: ActivatablesManager;
     private preloading: boolean = true;
     private startPositionCalculator!: StartPositionCalculator;
     private sharedVariablesManager!: SharedVariablesManager;
@@ -245,6 +251,7 @@ export class GameScene extends DirtyScene {
                 loadCustomTexture(this.load, texture).catch((e) => console.error(e));
             }
         }
+        this.load.image("iconTalk", "/resources/icons/icon_talking.png");
 
         if (touchScreenManager.supportTouchScreen) {
             this.load.image(joystickBaseKey, joystickBaseImg);
@@ -336,7 +343,6 @@ export class GameScene extends DirtyScene {
         (this.load as any).rexWebFont({
             custom: {
                 families: ["Press Start 2P"],
-                urls: ["/resources/fonts/fonts.css"],
                 testString: "abcdefg",
             },
         });
@@ -543,6 +549,8 @@ export class GameScene extends DirtyScene {
             urlManager.getStartLayerNameFromUrl()
         );
 
+        startLayerNamesStore.set(this.startPositionCalculator.getStartPositionNames());
+
         //add entities
         this.Objects = new Array<Phaser.Physics.Arcade.Sprite>();
 
@@ -562,7 +570,8 @@ export class GameScene extends DirtyScene {
 
         this.pathfindingManager = new PathfindingManager(
             this,
-            this.gameMap.getCollisionsGrid(),
+            this.gameMap.getCollisionGrid(),
+            this.gameMap.getWalkingCostGrid(),
             this.gameMap.getTileDimensions()
         );
 
@@ -570,11 +579,15 @@ export class GameScene extends DirtyScene {
         this.createCurrentPlayer();
         this.removeAllRemotePlayers(); //cleanup the list  of remote players in case the scene was rebooted
 
+        this.tryMovePlayerWithMoveToParameter();
+
         this.cameraManager = new CameraManager(
             this,
             { x: this.Map.widthInPixels, y: this.Map.heightInPixels },
             waScaleManager
         );
+
+        this.activatablesManager = new ActivatablesManager(this.CurrentPlayer);
 
         biggestAvailableAreaStore.recompute();
         this.cameraManager.startFollowPlayer(this.CurrentPlayer);
@@ -621,20 +634,50 @@ export class GameScene extends DirtyScene {
         );
 
         new GameMapPropertiesListener(this, this.gameMap).register();
-        this.triggerOnMapLayerPropertyChange();
 
         if (!this.room.isDisconnected()) {
             this.scene.sleep();
             this.connect();
         }
 
+        const talkIconVolumeTreshold = 10;
         let oldPeerNumber = 0;
         this.peerStoreUnsubscribe = peerStore.subscribe((peers) => {
+            this.volumeStoreUnsubscribers.forEach((unsubscribe) => unsubscribe());
+            this.volumeStoreUnsubscribers.clear();
+
+            for (const [key, videoStream] of peers) {
+                this.volumeStoreUnsubscribers.set(
+                    key,
+                    videoStream.volumeStore.subscribe((volume) => {
+                        if (volume) {
+                            this.MapPlayersByKey.get(key)?.showTalkIcon(volume > talkIconVolumeTreshold);
+                        }
+                    })
+                );
+            }
+
             const newPeerNumber = peers.size;
             if (newPeerNumber > oldPeerNumber) {
                 this.playSound("audio-webrtc-in");
             } else if (newPeerNumber < oldPeerNumber) {
                 this.playSound("audio-webrtc-out");
+            }
+            if (newPeerNumber > 0) {
+                if (!this.localVolumeStoreUnsubscriber) {
+                    this.localVolumeStoreUnsubscriber = localVolumeStore.subscribe((volume) => {
+                        if (volume) {
+                            this.CurrentPlayer.showTalkIcon(volume > talkIconVolumeTreshold);
+                        }
+                    });
+                }
+            } else {
+                this.CurrentPlayer.showTalkIcon(false, true);
+                this.MapPlayersByKey.forEach((remotePlayer) => remotePlayer.showTalkIcon(false, true));
+                if (this.localVolumeStoreUnsubscriber) {
+                    this.localVolumeStoreUnsubscriber();
+                    this.localVolumeStoreUnsubscriber = undefined;
+                }
             }
             oldPeerNumber = newPeerNumber;
         });
@@ -657,10 +700,10 @@ export class GameScene extends DirtyScene {
 
         this.followUsersColorStoreUnsubscribe = followUsersColorStore.subscribe((color) => {
             if (color !== undefined) {
-                this.CurrentPlayer.setOutlineColor(color);
+                this.CurrentPlayer.setFollowOutlineColor(color);
                 this.connection?.emitPlayerOutlineColor(color);
             } else {
-                this.CurrentPlayer.removeOutlineColor();
+                this.CurrentPlayer.removeFollowOutlineColor();
                 this.connection?.emitPlayerOutlineColor(null);
             }
         });
@@ -675,10 +718,6 @@ export class GameScene extends DirtyScene {
                     e
                 )
             );
-    }
-
-    public activateOutlinedItem(): void {
-        this.outlinedItem?.activate();
     }
 
     /**
@@ -792,7 +831,19 @@ export class GameScene extends DirtyScene {
                  * Triggered when we receive the JWT token to connect to Jitsi
                  */
                 this.connection.sendJitsiJwtMessageStream.subscribe((message) => {
-                    this.startJitsi(message.jitsiRoom, message.jwt);
+                    if (!JITSI_URL) {
+                        throw new Error("Missing JITSI_URL environment variable.");
+                    }
+
+                    let domain = JITSI_URL;
+
+                    if (domain.substring(0, 7) !== "http://" && domain.substring(0, 8) !== "https://") {
+                        domain = `${location.protocol}//${domain}`;
+                    }
+
+                    const coWebsite = new JitsiCoWebsite(new URL(domain), false, undefined, undefined, false);
+                    coWebsiteManager.addCoWebsiteToStore(coWebsite, 0);
+                    this.initialiseJitsi(coWebsite, message.jitsiRoom, message.jwt);
                 });
 
                 this.messageSubscription = this.connection.worldFullMessageStream.subscribe((message) => {
@@ -803,11 +854,8 @@ export class GameScene extends DirtyScene {
                 this.simplePeer = new SimplePeer(this.connection);
                 userMessageManager.setReceiveBanListener(this.bannedUser.bind(this));
 
-                //listen event to share position of user
-                this.CurrentPlayer.on(hasMovedEventName, this.pushPlayerPosition.bind(this));
-                this.CurrentPlayer.on(hasMovedEventName, this.outlineItem.bind(this));
                 this.CurrentPlayer.on(hasMovedEventName, (event: HasPlayerMovedEvent) => {
-                    this.gameMap.setPosition(event.x, event.y);
+                    this.handleCurrentPlayerHasMovedEvent(event);
                 });
 
                 // Set up variables manager
@@ -930,103 +978,6 @@ export class GameScene extends DirtyScene {
             console.warn('Invalid JSON found in property "' + propertyName + '" of the map:' + jsonString, e);
             return {};
         }
-    }
-
-    private triggerOnMapLayerPropertyChange() {
-        this.gameMap.onPropertyChange(GameMapProperties.EXIT_SCENE_URL, (newValue, oldValue) => {
-            if (newValue) {
-                this.onMapExit(
-                    Room.getRoomPathFromExitSceneUrl(newValue as string, window.location.toString(), this.MapUrlFile)
-                ).catch((e) => console.error(e));
-            } else {
-                setTimeout(() => {
-                    layoutManagerActionStore.removeAction("roomAccessDenied");
-                }, 2000);
-            }
-        });
-        this.gameMap.onPropertyChange(GameMapProperties.EXIT_URL, (newValue, oldValue) => {
-            if (newValue) {
-                this.onMapExit(Room.getRoomPathFromExitUrl(newValue as string, window.location.toString())).catch((e) =>
-                    console.error(e)
-                );
-            } else {
-                setTimeout(() => {
-                    layoutManagerActionStore.removeAction("roomAccessDenied");
-                }, 2000);
-            }
-        });
-
-        this.gameMap.onPropertyChange(GameMapProperties.JITSI_ROOM, (newValue, oldValue, allProps) => {
-            if (newValue === undefined) {
-                layoutManagerActionStore.removeAction("jitsi");
-                this.stopJitsi();
-            } else {
-                const openJitsiRoomFunction = () => {
-                    const roomName = jitsiFactory.getRoomName(newValue.toString(), this.instance);
-                    const jitsiUrl = allProps.get(GameMapProperties.JITSI_URL) as string | undefined;
-                    if (JITSI_PRIVATE_MODE && !jitsiUrl) {
-                        const adminTag = allProps.get(GameMapProperties.JITSI_ADMIN_ROOM_TAG) as string | undefined;
-
-                        this.connection?.emitQueryJitsiJwtMessage(roomName, adminTag);
-                    } else {
-                        this.startJitsi(roomName, undefined);
-                    }
-                    layoutManagerActionStore.removeAction("jitsi");
-                };
-
-                const jitsiTriggerValue = allProps.get(GameMapProperties.JITSI_TRIGGER);
-                const forceTrigger = localUserStore.getForceCowebsiteTrigger();
-                if (forceTrigger || jitsiTriggerValue === ON_ACTION_TRIGGER_BUTTON) {
-                    let message = allProps.get(GameMapProperties.JITSI_TRIGGER_MESSAGE);
-                    if (message === undefined) {
-                        message = "Press SPACE or touch here to enter Jitsi Meet room";
-                    }
-                    layoutManagerActionStore.addAction({
-                        uuid: "jitsi",
-                        type: "message",
-                        message: message,
-                        callback: () => openJitsiRoomFunction(),
-                        userInputManager: this.userInputManager,
-                    });
-                } else {
-                    openJitsiRoomFunction();
-                }
-            }
-        });
-        this.gameMap.onPropertyChange(GameMapProperties.SILENT, (newValue, oldValue) => {
-            if (newValue === undefined || newValue === false || newValue === "") {
-                this.connection?.setSilent(false);
-                this.CurrentPlayer.noSilent();
-            } else {
-                this.connection?.setSilent(true);
-                this.CurrentPlayer.isSilent();
-            }
-        });
-        this.gameMap.onPropertyChange(GameMapProperties.PLAY_AUDIO, (newValue, oldValue, allProps) => {
-            const volume = allProps.get(GameMapProperties.AUDIO_VOLUME) as number | undefined;
-            const loop = allProps.get(GameMapProperties.AUDIO_LOOP) as boolean | undefined;
-            newValue === undefined
-                ? audioManagerFileStore.unloadAudio()
-                : audioManagerFileStore.playAudio(newValue, this.getMapDirUrl(), volume, loop);
-            audioManagerVisibilityStore.set(!(newValue === undefined));
-        });
-        // TODO: This legacy property should be removed at some point
-        this.gameMap.onPropertyChange(GameMapProperties.PLAY_AUDIO_LOOP, (newValue, oldValue) => {
-            newValue === undefined
-                ? audioManagerFileStore.unloadAudio()
-                : audioManagerFileStore.playAudio(newValue, this.getMapDirUrl(), undefined, true);
-            audioManagerVisibilityStore.set(!(newValue === undefined));
-        });
-
-        // TODO: Legacy functionnality replace by layer change
-        this.gameMap.onPropertyChange(GameMapProperties.ZONE, (newValue, oldValue) => {
-            if (oldValue) {
-                iframeListener.sendLeaveEvent(oldValue as string);
-            }
-            if (newValue) {
-                iframeListener.sendEnterEvent(newValue as string);
-            }
-        });
     }
 
     private listenToIframeEvents(): void {
@@ -1261,21 +1212,22 @@ ${escapedMessage}
                 throw new Error("Unknown query source");
             }
 
-            const coWebsite = coWebsiteManager.addCoWebsite(
-                openCoWebsite.url,
-                iframeListener.getBaseUrlFromSource(source),
+            const coWebsite: SimpleCoWebsite = new SimpleCoWebsite(
+                new URL(openCoWebsite.url, iframeListener.getBaseUrlFromSource(source)),
                 openCoWebsite.allowApi,
                 openCoWebsite.allowPolicy,
-                openCoWebsite.position,
+                openCoWebsite.widthPercent,
                 openCoWebsite.closable ?? true
             );
 
-            if (openCoWebsite.lazy !== undefined && !openCoWebsite.lazy) {
+            coWebsiteManager.addCoWebsiteToStore(coWebsite, openCoWebsite.position);
+
+            if (openCoWebsite.lazy === undefined || !openCoWebsite.lazy) {
                 await coWebsiteManager.loadCoWebsite(coWebsite);
             }
 
             return {
-                id: coWebsite.iframe.id,
+                id: coWebsite.getId(),
             };
         });
 
@@ -1284,27 +1236,23 @@ ${escapedMessage}
 
             return coWebsites.map((coWebsite: CoWebsite) => {
                 return {
-                    id: coWebsite.iframe.id,
+                    id: coWebsite.getId(),
                 };
             });
         });
 
-        iframeListener.registerAnswerer("closeCoWebsite", async (coWebsiteId) => {
+        iframeListener.registerAnswerer("closeCoWebsite", (coWebsiteId) => {
             const coWebsite = coWebsiteManager.getCoWebsiteById(coWebsiteId);
 
             if (!coWebsite) {
                 throw new Error("Unknown co-website");
             }
 
-            return coWebsiteManager.closeCoWebsite(coWebsite).catch((error) => {
-                throw new Error("Error on closing co-website");
-            });
+            return coWebsiteManager.closeCoWebsite(coWebsite);
         });
 
-        iframeListener.registerAnswerer("closeCoWebsites", async () => {
-            return await coWebsiteManager.closeCoWebsites().catch((error) => {
-                throw new Error("Error on closing all co-websites");
-            });
+        iframeListener.registerAnswerer("closeCoWebsites", () => {
+            return coWebsiteManager.closeCoWebsites();
         });
 
         iframeListener.registerAnswerer("getMapData", () => {
@@ -1389,7 +1337,7 @@ ${escapedMessage}
                             //Create new colliders with the new GameMap
                             this.createCollisionWithPlayer();
                             //Create new trigger with the new GameMap
-                            this.triggerOnMapLayerPropertyChange();
+                            new GameMapPropertiesListener(this, this.gameMap).register();
                             resolve(newFirstgid);
                         });
                     });
@@ -1443,12 +1391,12 @@ ${escapedMessage}
             const green = normalizeColor(message.green);
             const blue = normalizeColor(message.blue);
             const color = (red << 16) | (green << 8) | blue;
-            this.CurrentPlayer.setOutlineColor(color);
+            this.CurrentPlayer.setApiOutlineColor(color);
             this.connection?.emitPlayerOutlineColor(color);
         });
 
         iframeListener.registerAnswerer("removePlayerOutline", (message) => {
-            this.CurrentPlayer.removeOutlineColor();
+            this.CurrentPlayer.removeApiOutlineColor();
             this.connection?.emitPlayerOutlineColor(null);
         });
 
@@ -1460,9 +1408,9 @@ ${escapedMessage}
         });
 
         iframeListener.registerAnswerer("movePlayerTo", async (message) => {
-            const index = this.getGameMap().getTileIndexAt(message.x, message.y);
-            const startTile = this.getGameMap().getTileIndexAt(this.CurrentPlayer.x, this.CurrentPlayer.y);
-            const path = await this.getPathfindingManager().findPath(startTile, index, true, true);
+            const startTileIndex = this.getGameMap().getTileIndexAt(this.CurrentPlayer.x, this.CurrentPlayer.y);
+            const destinationTileIndex = this.getGameMap().getTileIndexAt(message.x, message.y);
+            const path = await this.getPathfindingManager().findPath(startTileIndex, destinationTileIndex, true, true);
             path.shift();
             if (path.length === 0) {
                 throw new Error("no path available");
@@ -1489,7 +1437,7 @@ ${escapedMessage}
             phaserLayer.setCollisionByProperty({ collides: true }, visible);
         } else {
             const phaserLayers = this.gameMap.findPhaserLayers(layerName + "/");
-            if (phaserLayers === []) {
+            if (phaserLayers.length === 0) {
                 console.warn(
                     'Could not find layer with name that contains "' +
                         layerName +
@@ -1502,14 +1450,15 @@ ${escapedMessage}
                 phaserLayers[i].setCollisionByProperty({ collides: true }, visible);
             }
         }
+        this.pathfindingManager.setCollisionGrid(this.gameMap.getCollisionGrid(), this.gameMap.getWalkingCostGrid());
         this.markDirty();
     }
 
-    private getMapDirUrl(): string {
-        return this.MapUrlFile.substr(0, this.MapUrlFile.lastIndexOf("/"));
+    public getMapDirUrl(): string {
+        return this.MapUrlFile.substring(0, this.MapUrlFile.lastIndexOf("/"));
     }
 
-    private async onMapExit(roomUrl: URL) {
+    public async onMapExit(roomUrl: URL) {
         if (this.mapTransitioning) return;
         this.mapTransitioning = true;
 
@@ -1568,14 +1517,13 @@ ${escapedMessage}
 
     public cleanupClosingScene(): void {
         // stop playing audio, close any open website, stop any open Jitsi
-        coWebsiteManager.closeCoWebsites().catch((e) => console.error(e));
+        coWebsiteManager.closeCoWebsites();
         // Stop the script, if any
         const scripts = this.getScriptUrls(this.mapFile);
         for (const script of scripts) {
             iframeListener.unregisterScript(script);
         }
 
-        this.stopJitsi();
         audioManagerFileStore.unloadAudio();
         // We are completely destroying the current scene to avoid using a half-backed instance when coming back to the same map.
         this.connection?.closeConnection();
@@ -1624,6 +1572,36 @@ ${escapedMessage}
             this.MapPlayers.remove(player);
         });
         this.MapPlayersByKey.clear();
+    }
+
+    private tryMovePlayerWithMoveToParameter(): void {
+        const moveToParam = urlManager.getHashParameter("moveTo");
+        if (moveToParam) {
+            try {
+                let endPos;
+                const posFromParam = StringUtils.parsePointFromParam(moveToParam);
+                if (posFromParam) {
+                    endPos = this.gameMap.getTileIndexAt(posFromParam.x, posFromParam.y);
+                } else {
+                    const destinationObject = this.gameMap.getObjectWithName(moveToParam);
+                    if (destinationObject) {
+                        endPos = this.gameMap.getTileIndexAt(destinationObject.x, destinationObject.y);
+                    } else {
+                        endPos = this.gameMap.getRandomPositionFromLayer(moveToParam);
+                    }
+                }
+                this.pathfindingManager
+                    .findPath(this.gameMap.getTileIndexAt(this.CurrentPlayer.x, this.CurrentPlayer.y), endPos)
+                    .then((path) => {
+                        if (path && path.length > 0) {
+                            this.CurrentPlayer.setPathToFollow(path).catch((reason) => console.warn(reason));
+                        }
+                    })
+                    .catch((reason) => console.warn(reason));
+            } catch (err) {
+                console.warn(`Cannot proceed with moveTo command:\n\t-> ${err}`);
+            }
+        }
     }
 
     private getExitUrl(layer: ITiledMapLayer): string | undefined {
@@ -1681,7 +1659,18 @@ ${escapedMessage}
         }
     }
 
-    createCollisionWithPlayer() {
+    private handleCurrentPlayerHasMovedEvent(event: HasPlayerMovedEvent): void {
+        //listen event to share position of user
+        this.pushPlayerPosition(event);
+        this.gameMap.setPosition(event.x, event.y);
+        this.activatablesManager.updateActivatableObjectsDistances([
+            ...Array.from(this.MapPlayersByKey.values()),
+            ...this.actionableItems.values(),
+        ]);
+        this.activatablesManager.deduceSelectedActivatableObjectByDistance();
+    }
+
+    private createCollisionWithPlayer() {
         //add collision layer
         for (const phaserLayer of this.gameMap.phaserLayers) {
             this.physics.add.collider(this.CurrentPlayer, phaserLayer, (object1: GameObject, object2: GameObject) => {
@@ -1700,7 +1689,7 @@ ${escapedMessage}
         }
     }
 
-    createCurrentPlayer() {
+    private createCurrentPlayer() {
         //TODO create animation moving between exit and start
         const texturesPromise = lazyLoadPlayerCharacterTextures(this.load, this.characterLayers);
         try {
@@ -1715,7 +1704,7 @@ ${escapedMessage}
                 this.companion,
                 this.companion !== null ? lazyLoadCompanionResource(this.load, this.companion) : undefined
             );
-            this.CurrentPlayer.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+            this.CurrentPlayer.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
                 if (pointer.wasTouch && (pointer.event as TouchEvent).touches.length > 1) {
                     return; //we don't want the menu to open when pinching on a touch screen.
                 }
@@ -1727,26 +1716,16 @@ ${escapedMessage}
                     emoteMenuStore.openEmoteMenu();
                 }
             });
+            this.CurrentPlayer.on(Phaser.Input.Events.POINTER_OVER, (pointer: Phaser.Input.Pointer) => {
+                this.CurrentPlayer.pointerOverOutline(0x365dff);
+            });
+            this.CurrentPlayer.on(Phaser.Input.Events.POINTER_OUT, (pointer: Phaser.Input.Pointer) => {
+                this.CurrentPlayer.pointerOutOutline();
+            });
             this.CurrentPlayer.on(requestEmoteEventName, (emoteKey: string) => {
                 this.connection?.emitEmoteEvent(emoteKey);
                 analyticsClient.launchEmote(emoteKey);
             });
-            const moveToParam = urlManager.getHashParameter("moveTo");
-            if (moveToParam) {
-                try {
-                    const endPos = this.gameMap.getRandomPositionFromLayer(moveToParam);
-                    this.pathfindingManager
-                        .findPath(this.gameMap.getTileIndexAt(this.CurrentPlayer.x, this.CurrentPlayer.y), endPos)
-                        .then((path) => {
-                            if (path && path.length > 0) {
-                                this.CurrentPlayer.setPathToFollow(path).catch((reason) => console.warn(reason));
-                            }
-                        })
-                        .catch((reason) => console.warn(reason));
-                } catch (err) {
-                    console.warn(`Cannot proceed with moveTo command:\n\t-> ${err}`);
-                }
-            }
         } catch (err) {
             if (err instanceof TextureError) {
                 gameManager.leaveGame(SelectCharacterSceneName, new SelectCharacterScene());
@@ -1758,7 +1737,7 @@ ${escapedMessage}
         this.createCollisionWithPlayer();
     }
 
-    pushPlayerPosition(event: HasPlayerMovedEvent) {
+    private pushPlayerPosition(event: HasPlayerMovedEvent) {
         if (this.lastMoveEventSent === event) {
             return;
         }
@@ -1784,49 +1763,6 @@ ${escapedMessage}
         // Otherwise, do nothing.
     }
 
-    /**
-     * Finds the correct item to outline and outline it (if there is an item to be outlined)
-     * @param event
-     */
-    private outlineItem(event: HasPlayerMovedEvent): void {
-        let x = event.x;
-        let y = event.y;
-        switch (event.direction) {
-            case PlayerAnimationDirections.Up:
-                y -= 32;
-                break;
-            case PlayerAnimationDirections.Down:
-                y += 32;
-                break;
-            case PlayerAnimationDirections.Left:
-                x -= 32;
-                break;
-            case PlayerAnimationDirections.Right:
-                x += 32;
-                break;
-            default:
-                throw new Error('Unexpected direction "' + event.direction + '"');
-        }
-
-        let shortestDistance: number = Infinity;
-        let selectedItem: ActionableItem | null = null;
-        for (const item of this.actionableItems.values()) {
-            const distance = item.actionableDistance(x, y);
-            if (distance !== null && distance < shortestDistance) {
-                shortestDistance = distance;
-                selectedItem = item;
-            }
-        }
-
-        if (this.outlinedItem === selectedItem) {
-            return;
-        }
-
-        this.outlinedItem?.notSelectable();
-        this.outlinedItem = selectedItem;
-        this.outlinedItem?.selectable();
-    }
-
     private doPushPlayerPosition(event: HasPlayerMovedEvent): void {
         this.lastMoveEventSent = event;
         this.lastSentTick = this.currentTick;
@@ -1844,7 +1780,7 @@ ${escapedMessage}
      * @param time
      * @param delta The delta time in ms since the last frame. This is a smoothed and capped value based on the FPS rate.
      */
-    update(time: number, delta: number): void {
+    public update(time: number, delta: number): void {
         this.dirty = false;
         this.currentTick = time;
         this.CurrentPlayer.moveUser(delta, this.userInputManager.getEventListForGameTick());
@@ -1863,9 +1799,15 @@ ${escapedMessage}
                 case "RemovePlayerEvent":
                     this.doRemovePlayer(event.userId);
                     break;
-                case "UserMovedEvent":
+                case "UserMovedEvent": {
                     this.doUpdatePlayerPosition(event.event);
+                    const remotePlayer = this.MapPlayersByKey.get(event.event.userId);
+                    if (remotePlayer) {
+                        this.activatablesManager.updateDistanceForSingleActivatableObject(remotePlayer);
+                        this.activatablesManager.deduceSelectedActivatableObjectByDistance();
+                    }
                     break;
+                }
                 case "GroupCreatedUpdatedEvent":
                     this.doShareGroupPosition(event.event);
                     break;
@@ -1952,11 +1894,21 @@ ${escapedMessage}
             addPlayerData.companion !== null ? lazyLoadCompanionResource(this.load, addPlayerData.companion) : undefined
         );
         if (addPlayerData.outlineColor !== undefined) {
-            player.setOutlineColor(addPlayerData.outlineColor);
+            player.setApiOutlineColor(addPlayerData.outlineColor);
         }
         this.MapPlayers.add(player);
         this.MapPlayersByKey.set(player.userId, player);
         player.updatePosition(addPlayerData.position);
+
+        player.on(Phaser.Input.Events.POINTER_OVER, () => {
+            this.activatablesManager.handlePointerOverActivatableObject(player);
+            this.markDirty();
+        });
+
+        player.on(Phaser.Input.Events.POINTER_OUT, () => {
+            this.activatablesManager.handlePointerOutActivatableObject();
+            this.markDirty();
+        });
     }
 
     /**
@@ -1986,7 +1938,7 @@ ${escapedMessage}
         this.playersPositionInterpolator.removePlayer(userId);
     }
 
-    public updatePlayerPosition(message: MessageUserMovedInterface): void {
+    private updatePlayerPosition(message: MessageUserMovedInterface): void {
         this.pendingEvents.enqueue({
             type: "UserMovedEvent",
             event: message,
@@ -2016,7 +1968,7 @@ ${escapedMessage}
         this.playersPositionInterpolator.updatePlayerPosition(player.userId, playerMovement);
     }
 
-    public shareGroupPosition(groupPositionMessage: GroupCreatedUpdatedMessageInterface) {
+    private shareGroupPosition(groupPositionMessage: GroupCreatedUpdatedMessageInterface) {
         this.pendingEvents.enqueue({
             type: "GroupCreatedUpdatedEvent",
             event: groupPositionMessage,
@@ -2068,9 +2020,9 @@ ${escapedMessage}
             return;
         }
         if (message.removeOutlineColor) {
-            character.removeOutlineColor();
+            character.removeApiOutlineColor();
         } else {
-            character.setOutlineColor(message.outlineColor);
+            character.setApiOutlineColor(message.outlineColor);
         }
     }
 
@@ -2126,7 +2078,7 @@ ${escapedMessage}
         mediaManager.hideMyCamera();
     }
 
-    public startJitsi(roomName: string, jwt?: string): void {
+    public initialiseJitsi(coWebsite: JitsiCoWebsite, roomName: string, jwt?: string): void {
         const allProps = this.gameMap.getCurrentProperties();
         const jitsiConfig = this.safeParseJSONstring(
             allProps.get(GameMapProperties.JITSI_CONFIG) as string | undefined,
@@ -2138,20 +2090,15 @@ ${escapedMessage}
         );
         const jitsiUrl = allProps.get(GameMapProperties.JITSI_URL) as string | undefined;
 
-        jitsiFactory.start(roomName, this.playerName, jwt, jitsiConfig, jitsiInterfaceConfig, jitsiUrl).catch(() => {
-            console.error("Cannot start a Jitsi co-website");
+        coWebsite.setJitsiLoadPromise(() => {
+            return jitsiFactory.start(roomName, this.playerName, jwt, jitsiConfig, jitsiInterfaceConfig, jitsiUrl);
         });
-        this.disableMediaBehaviors();
-        analyticsClient.enteredJitsi(roomName, this.room.id);
-    }
 
-    public stopJitsi(): void {
-        const coWebsite = coWebsiteManager.searchJitsi();
-        if (coWebsite) {
-            coWebsiteManager.closeCoWebsite(coWebsite).catch((e) => {
-                console.error("Error during Jitsi co-website closing", e);
-            });
-        }
+        coWebsiteManager.loadCoWebsite(coWebsite).catch((err) => {
+            console.error(err);
+        });
+
+        analyticsClient.enteredJitsi(roomName, this.room.id);
     }
 
     //todo: put this into an 'orchestrator' scene (EntryScene?)
@@ -2226,5 +2173,9 @@ ${escapedMessage}
 
     public getPathfindingManager(): PathfindingManager {
         return this.pathfindingManager;
+    }
+
+    public getActivatablesManager(): ActivatablesManager {
+        return this.activatablesManager;
     }
 }
