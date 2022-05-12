@@ -41,7 +41,7 @@ export class ErrorScene extends Phaser.Scene {
             // is not unlikely given the fact we are in an error scene), this will cause an error.
             this.load.bitmapFont(Textures.mainFont, "resources/fonts/arcade.png", "resources/fonts/arcade.xml");
         }
-        this.load.spritesheet("cat", "resources/characters/pipoya/Cat 01-1.png", { frameWidth: 32, frameHeight: 32 });
+        this.load.spritesheet("cat", "resources/companions/Platypus 01-1.png.png", { frameWidth: 32, frameHeight: 32 });
     }
 
     create() {
