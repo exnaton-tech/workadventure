@@ -5,21 +5,12 @@ export interface CompanionResourceDescriptionInterface {
 }
 
 export const COMPANION_RESOURCES: CompanionResourceDescriptionInterface[] = [
-<<<<<<< HEAD
     { name: "dog1", img: "resources/characters/pipoya/Dog 01-1.png", behaviour: "dog" },
     { name: "dog2", img: "resources/characters/pipoya/Dog 01-2.png", behaviour: "dog" },
     { name: "dog3", img: "resources/characters/pipoya/Dog 01-3.png", behaviour: "dog" },
     { name: "cat1", img: "resources/characters/pipoya/Cat 01-1.png", behaviour: "cat" },
     { name: "cat2", img: "resources/characters/pipoya/Cat 01-2.png", behaviour: "cat" },
     { name: "cat3", img: "resources/characters/pipoya/Cat 01-3.png", behaviour: "cat" },
-=======
-    { name: "cat1", img: "resources/characters/pipoya/Cat 01-1.png", behaviour: "cat" },
-    { name: "cat2", img: "resources/characters/pipoya/Cat 01-2.png", behaviour: "cat" },
-    { name: "cat3", img: "resources/characters/pipoya/Cat 01-3.png", behaviour: "cat" },
-    { name: "dog1", img: "resources/characters/pipoya/Dog 01-1.png", behaviour: "dog" },
-    { name: "dog2", img: "resources/characters/pipoya/Dog 01-2.png", behaviour: "dog" },
-    { name: "dog3", img: "resources/characters/pipoya/Dog 01-3.png", behaviour: "dog" },
-
     { name: "bear1", img: "resources/companions/Bear 01-1.png", behaviour: "dog" },
     { name: "bear2", img: "resources/companions/Bear 01-2.png", behaviour: "dog" },
     { name: "butterfly1", img: "resources/companions/Butterfly 01-1.png", behaviour: "dog" },
@@ -55,5 +46,4 @@ export const COMPANION_RESOURCES: CompanionResourceDescriptionInterface[] = [
     { name: "platypus1", img: "resources/companions/Platypus 01-1.png", behaviour: "dog" },
     { name: "platypus2", img: "resources/companions/Platypus 01-2.png", behaviour: "dog" },
     { name: "polarbear1", img: "resources/companions/Polar Bear 01-1.png", behaviour: "dog" },
->>>>>>> e90ba36... Updated companion locations
 ];
